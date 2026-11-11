@@ -1,11 +1,16 @@
 """Bitstamp (bitstamp.net) for Liminal: crypto minute bars from 2011 and its public trade stream, no key;
 an exchange of its own.
 
-A Liminal plugin released on its own, a class on plugin API 2.0 (liminal_libs.sources.archive:
+A Liminal plugin released on its own, a class on plugin API 2.2 (liminal_libs.sources.archive:
 CryptoVenuePlugin, a crypto exchange's; liminal-libs 1.3.0: what it declares class attributes, what
 it does methods), registered under the entry point group `liminal.providers` as `bitstamp`. It relies
 on nothing of the app outside the contract (docs/ARCHITECTURE.md in liminal-charts: "Providers are
 plugins"); its version is this distribution's (pyproject.toml), so PLUGIN.version is left empty.
+
+Plugin API 2.2 (liminal-libs 1.49.0; the user, 2026-11-11: "each plugin should reflect the the API its attached to, and
+present links that provide documentation"): `apis`, the two things it talks to (apis.py: Bitstamp's HTTP API v2 and its
+WebSocket API v2, with Bitstamp's pages, every part of each and the calls it makes among the rest), and `api_facts()`,
+what its client and its stream learned while they ran (facts.py), asking nothing.
 """
 from __future__ import annotations
 
@@ -22,9 +27,12 @@ from liminal_libs.sources.archive import CryptoVenuePlugin
 from liminal_libs.sources.registry import FeedPlugin
 from liminal_libs.sources.stream import Live, Reconnect, trade
 
+from .apis import APIS, HTTP_NAME, WS_NAME
+from .facts import NOTES, stream_words
+
 BASE_URL = "https://www.bitstamp.net/api/v2"
-# Its plan and caps (once the app's config.PUBLIC_FEEDS["bitstamp"]): Bitstamp allows 8,000 requests
-# per 10 minutes; well inside it.
+# Its plan and caps (once the app's config.PUBLIC_FEEDS["bitstamp"]): Bitstamp allows 400 requests a second
+# and 10,000 per 10 minutes by default (its HTTP API page, 2026-11-11); well inside it.
 TIER = Tier("bitstamp-public", requests_per_minute=300, history_years=None, history_start=date(2011, 8, 1))
 PER_RUN, PER_DAY = 8000, 20000
 
@@ -89,6 +97,10 @@ class BitstampStream:
     authed: bool = True
     confirmed: frozenset = frozenset()
 
+    def __post_init__(self) -> None:
+        """Noted under the WebSocket API (held weakly: api_facts says the pairs the server confirmed)."""
+        NOTES.note(WS_NAME, self, stream_words, began="Stream opened", states=("open", "closed"))
+
     def subscribe(self, coins) -> list[str]:
         self.confirmed = frozenset()
         return [json.dumps({"event": "bts:subscribe", "data": {"channel": f"live_trades_{c.lower()}usd"}})
@@ -125,7 +137,7 @@ class BitstampPlugin(CryptoVenuePlugin):
     was: its fixed plan and caps, all the history it holds, CRYPTO_VENUE_DAYS not applied (the app
     limits Coinbase and Bitfinex with it)."""
 
-    api = "2.0"  # the contract it is written for (the class contract); its version: the distribution's
+    api = "2.2"  # the contract it is written for (2.2: what it attaches to, `apis`); its version: the distribution's
     name = "bitstamp"
     title = "Bitstamp"
     about = "crypto minute bars from 2011 (no key)"
@@ -135,16 +147,31 @@ class BitstampPlugin(CryptoVenuePlugin):
     tier = TIER
     per_run = PER_RUN
     per_day = PER_DAY
-    limits = "8,000 requests per 10 minutes"
+    limits = "400 requests a second; 10,000 per 10 minutes by default"  # its HTTP API page (2026-11-11; it was 8,000)
     per_request = {"day": BitstampSource.PAGE, "minute": BitstampSource.PAGE}
     streams = {"crypto": "real time, public trades (no key), coins open on a chart"}
     live = (Live("bitstamp", "crypto", stream=BitstampStream),)
     # when its data is published (the library's freshness row for its plan): each minute once it closes
     delays = {"bitstamp-public": {"crypto": Delay("delay")}}
+    # what it attaches to (plugin API 2.2): Bitstamp's HTTP API v2 and its WebSocket API v2 (apis.py)
+    apis = APIS
 
     def view(self, base):
         """The contract's default (FeedPlugin.view): its fixed tier and caps, the history unlimited."""
         return FeedPlugin.view(self, base)
+
+    def build(self, settings, request_budget):
+        """The public feed's own build (PublicFeedPlugin.build), its client noted under the HTTP API (held
+        weakly: api_facts reads what it learned)."""
+        source = super().build(settings, request_budget)
+        NOTES.note(HTTP_NAME, source.client)
+        return source
+
+    def api_facts(self):
+        """What its client learned of the HTTP API (the requests made, the last answer's clock, the rate-limit
+        headers its server sent) and the pairs its stream's server confirmed, from what this process already
+        holds: nothing is asked (facts.py)."""
+        return NOTES.facts(a.name for a in self.apis)
 
     def carries(self, spec):
         return spec.ticker.upper() in BITSTAMP_PAIRS
